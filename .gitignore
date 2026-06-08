@@ -12,6 +12,29 @@ dist
 dist-ssr
 *.local
 
+# Next.js
+/.next/
+/out/
+next-env.d.ts
+*.tsbuildinfo
+
+# env
+.env*.local
+
+scripts/bot/auth.json
+scripts/bot/cookies.json
+scripts/bot/probe-result.json
+scripts/bot/.cache/
+
+.claude
+
+# Plans & tài liệu làm việc nội bộ
+plans/
+
+/supabase/
+/scripts/
+/docs/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
