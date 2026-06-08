@@ -8,6 +8,11 @@ import { generateCaption } from "@/lib/caption";
 import { publishToFacebook } from "@/lib/facebook";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatPriceVND } from "@/lib/format";
+import {
+  isShopeeProductUrl,
+  parseShopeeIds,
+  buildAffiliateLink,
+} from "@/lib/shopee-link";
 
 export const dynamic = "force-dynamic";
 
@@ -16,13 +21,30 @@ function authorized(chatId: number | string): boolean {
   return !allow || String(chatId) === String(allow);
 }
 
+/** ISO của lần kế tiếp đạt mốc `hour`:00 giờ Việt Nam (UTC+7). */
+function nextVnTime(hour: number): string {
+  const now = Date.now();
+  const vn = new Date(now + 7 * 3600 * 1000);
+  let target =
+    Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate(), hour) -
+    7 * 3600 * 1000;
+  if (target <= now) target += 24 * 3600 * 1000;
+  return new Date(target).toISOString();
+}
+
+function fmtVn(iso: string): string {
+  return new Date(iso).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
+}
+
 const WELCOME = `🤖 <b>Bot Đồ Xịn Nhà Xinh</b>
-Ra lệnh đăng bài fanpage ngay từ đây.
+Trợ lý đăng bài fanpage — ra lệnh từ đây.
 
 <b>Lệnh:</b>
-/hot — sản phẩm được quan tâm nhất → tạo bài đăng
+/hot — sản phẩm hot → tạo bài (đăng ngay / hẹn giờ)
+/thongke — số liệu: click, bài đã đăng
 /help — hướng dẫn
 
+➕ Dán <b>link sản phẩm Shopee</b> → bot tự thêm vào kho.
 Mẹo: gõ "<i>đăng gì hôm nay</i>" cũng được.`;
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -39,10 +61,99 @@ async function showHot(chatId: number | string) {
       callback_data: `taobai:${p.id}`,
     },
   ]);
+  await sendMessage(chatId, "🔥 <b>Sản phẩm hot</b> — bấm để AI viết bài:", buttons);
+}
+
+async function showStats(chatId: number | string) {
+  const sb = createSupabaseAdminClient();
+  const now = Date.now();
+  const vn = new Date(now + 7 * 3600 * 1000);
+  const todayIso = new Date(
+    Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate()) -
+      7 * 3600 * 1000,
+  ).toISOString();
+
+  const [{ data: prods }, postsTotal, postsToday, sched] = await Promise.all([
+    sb
+      .from("products")
+      .select("name,clicks")
+      .eq("status", "published")
+      .order("clicks", { ascending: false }),
+    sb.from("posts").select("*", { count: "exact", head: true }).eq("status", "published"),
+    sb
+      .from("posts")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "published")
+      .gte("published_at", todayIso),
+    sb
+      .from("posts")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "approved")
+      .not("scheduled_at", "is", null),
+  ]);
+
+  const totalClicks = (prods || []).reduce((s, p) => s + (p.clicks || 0), 0);
+  const top = (prods || [])
+    .filter((p) => (p.clicks || 0) > 0)
+    .slice(0, 5)
+    .map((p, i) => `${i + 1}. ${p.name.slice(0, 40)} — ${p.clicks}👀`)
+    .join("\n");
+
   await sendMessage(
     chatId,
-    "🔥 <b>Sản phẩm hot</b> — bấm để Claude viết bài đăng:",
-    buttons,
+    `📊 <b>Thống kê</b>\n
+🛍️ Sản phẩm: ${prods?.length || 0}
+👀 Tổng lượt quan tâm: ${totalClicks}
+📤 Bài đã đăng: ${postsTotal.count || 0} (hôm nay ${postsToday.count || 0})
+⏰ Bài đang hẹn giờ: ${sched.count || 0}
+${top ? `\n<b>Top quan tâm:</b>\n${top}` : ""}`,
+  );
+}
+
+/** Thêm sản phẩm từ link Shopee dán vào chat. */
+async function addProductFromUrl(chatId: number | string, url: string) {
+  const ids = parseShopeeIds(url);
+  const m = url.match(/shopee\.vn\/([^?]*?)-i\.\d+\.\d+/i);
+  let name = "Sản phẩm Shopee";
+  if (m && m[1]) {
+    try {
+      name = decodeURIComponent(m[1]).replace(/-/g, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+    } catch {}
+  }
+  const slug = ids ? `sp-${ids.itemId}` : `sp-${Date.now()}`;
+
+  let affiliate: string;
+  try {
+    affiliate = buildAffiliateLink(url, { subId: slug });
+  } catch (e) {
+    await sendMessage(chatId, `⚠️ ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+
+  const sb = createSupabaseAdminClient();
+  const { data, error } = await sb
+    .from("products")
+    .upsert(
+      {
+        name,
+        slug,
+        price: 0,
+        affiliate_url: affiliate,
+        source: "manual",
+        status: "draft",
+      },
+      { onConflict: "slug" },
+    )
+    .select("id")
+    .single();
+  if (error || !data) {
+    await sendMessage(chatId, `❌ Lỗi thêm SP: ${error?.message || "?"}`);
+    return;
+  }
+  await sendMessage(
+    chatId,
+    `✅ Đã thêm: <b>${name}</b> (nháp)\nVào admin điền giá/ảnh, hoặc tạo bài luôn:`,
+    [[{ text: "✍️ Tạo bài ngay", callback_data: `taobai:${data.id}` }]],
   );
 }
 
@@ -53,10 +164,26 @@ async function handleMessage(msg: any) {
     await sendMessage(chatId, `⛔ Không có quyền. Chat ID của bạn: ${chatId}`);
     return;
   }
-  const text: string = (msg.text || "").trim().toLowerCase();
+  const raw: string = (msg.text || "").trim();
+  const text = raw.toLowerCase();
+
+  // Dán link Shopee → thêm sản phẩm
+  const urlMatch = raw.match(/https?:\/\/[^\s]+/);
+  if (urlMatch && /shopee\.vn/i.test(urlMatch[0])) {
+    if (isShopeeProductUrl(urlMatch[0])) {
+      await addProductFromUrl(chatId, urlMatch[0]);
+    } else {
+      await sendMessage(chatId, "Link Shopee không hợp lệ (cần dạng ...-i.shopId.itemId).");
+    }
+    return;
+  }
 
   if (text.startsWith("/id")) {
     await sendMessage(chatId, `Chat ID của bạn: <code>${chatId}</code>`);
+    return;
+  }
+  if (text.startsWith("/thongke") || text.includes("thống kê")) {
+    await showStats(chatId);
     return;
   }
   if (text.startsWith("/start") || text.startsWith("/help") || text === "/menu") {
@@ -72,7 +199,7 @@ async function handleMessage(msg: any) {
     await showHot(chatId);
     return;
   }
-  await sendMessage(chatId, "Chưa hiểu lệnh. Gõ /help hoặc /hot nhé.");
+  await sendMessage(chatId, "Chưa hiểu. Gõ /help · /hot · /thongke, hoặc dán link Shopee.");
 }
 
 async function handleCallback(cq: any) {
@@ -83,7 +210,7 @@ async function handleCallback(cq: any) {
 
   const sb = createSupabaseAdminClient();
 
-  // Tạo bài: Claude viết caption -> lưu post -> gửi caption + nút Đăng/Hủy
+  // Tạo bài: AI viết caption -> lưu nháp -> nút Đăng ngay / Hẹn giờ / Hủy
   if (data.startsWith("taobai:")) {
     const productId = data.slice("taobai:".length);
     const product = await adminGetProduct(productId);
@@ -122,16 +249,32 @@ async function handleCallback(cq: any) {
       chatId,
       `📝 <b>Bản nháp:</b>\n\n${caption}\n\n${product.price > 0 ? formatPriceVND(product.price) : ""}`,
       [
+        [{ text: "✅ Đăng ngay", callback_data: `dang:${post.id}` }],
         [
-          { text: "✅ Đăng fanpage", callback_data: `dang:${post.id}` },
-          { text: "❌ Hủy", callback_data: `huy:${post.id}` },
+          { text: "🌙 Hẹn 20h", callback_data: `lich:${post.id}:20` },
+          { text: "🌅 Hẹn 8h sáng", callback_data: `lich:${post.id}:8` },
         ],
+        [{ text: "❌ Hủy", callback_data: `huy:${post.id}` }],
       ],
     );
     return;
   }
 
-  // Đăng lên Facebook
+  // Hẹn giờ đăng
+  if (data.startsWith("lich:")) {
+    const parts = data.split(":"); // lich : postId : hour
+    const postId = parts[1];
+    const hour = Number(parts[2]);
+    const iso = nextVnTime(hour);
+    await sb
+      .from("posts")
+      .update({ status: "approved", scheduled_at: iso })
+      .eq("id", postId);
+    await sendMessage(chatId, `⏰ Đã hẹn đăng lúc <b>${fmtVn(iso)}</b>. Bot sẽ tự đăng.`);
+    return;
+  }
+
+  // Đăng ngay
   if (data.startsWith("dang:")) {
     const postId = data.slice("dang:".length);
     const post = await adminGetPost(postId);
@@ -152,10 +295,7 @@ async function handleCallback(cq: any) {
           error: null,
         })
         .eq("id", postId);
-      await sendMessage(
-        chatId,
-        `✅ Đã đăng!\nhttps://facebook.com/${fbPostId}`,
-      );
+      await sendMessage(chatId, `✅ Đã đăng!\nhttps://facebook.com/${fbPostId}`);
     } catch (e) {
       const m = e instanceof Error ? e.message : String(e);
       await sb.from("posts").update({ status: "failed", error: m }).eq("id", postId);
@@ -164,7 +304,7 @@ async function handleCallback(cq: any) {
     return;
   }
 
-  // Hủy bản nháp
+  // Hủy nháp
   if (data.startsWith("huy:")) {
     const postId = data.slice("huy:".length);
     await sb.from("posts").delete().eq("id", postId);
@@ -175,13 +315,9 @@ async function handleCallback(cq: any) {
 
 export async function POST(req: NextRequest) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (
-    secret &&
-    req.headers.get("x-telegram-bot-api-secret-token") !== secret
-  ) {
+  if (secret && req.headers.get("x-telegram-bot-api-secret-token") !== secret) {
     return NextResponse.json({ ok: false }, { status: 401 });
   }
-
   const update = await req.json().catch(() => null);
   try {
     if (update?.message) await handleMessage(update.message);
@@ -189,6 +325,5 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error("telegram error", e);
   }
-  // Luôn trả 200 để Telegram không gửi lại liên tục.
   return NextResponse.json({ ok: true });
 }
