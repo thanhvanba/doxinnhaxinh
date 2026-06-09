@@ -6,6 +6,8 @@ export type Post = {
   product_id: string | null;
   caption: string | null;
   image_url: string | null;
+  images: string[] | null;
+  video_url: string | null;
   affiliate_url: string | null;
   status: string;
   fb_post_id: string | null;
@@ -15,7 +17,7 @@ export type Post = {
 };
 
 const COLS =
-  "id,created_at,product_id,caption,image_url,affiliate_url,status,fb_post_id,error,published_at,product:products(name,slug)";
+  "id,created_at,product_id,caption,image_url,images,video_url,affiliate_url,status,fb_post_id,error,published_at,product:products(name,slug)";
 
 export async function adminGetPosts(): Promise<Post[]> {
   const sb = createSupabaseAdminClient();

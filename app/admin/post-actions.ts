@@ -14,7 +14,7 @@ async function guard() {
   if (!(await isAuthed())) redirect("/admin/login");
 }
 
-/** Tạo bài đăng từ 1 sản phẩm: Claude viết caption -> lưu draft -> mở trang sửa. */
+/** Tạo bài đăng từ 1 sản phẩm: AI viết caption -> lưu draft -> mở trang sửa. */
 export async function createPostFromProductAction(formData: FormData) {
   await guard();
   const productId = String(formData.get("product_id") || "");
@@ -38,6 +38,8 @@ export async function createPostFromProductAction(formData: FormData) {
       product_id: product.id,
       caption,
       image_url: product.image_url,
+      images: product.images ?? [],
+      video_url: product.video_url,
       affiliate_url: product.affiliate_url,
       status: "draft",
       channel: "facebook",
@@ -101,6 +103,8 @@ export async function publishPostAction(formData: FormData) {
     const { fbPostId } = await publishToFacebook({
       caption: post.caption || "",
       imageUrl: post.image_url,
+      images: post.images,
+      videoUrl: post.video_url,
       affiliateUrl: post.affiliate_url,
     });
     await sb

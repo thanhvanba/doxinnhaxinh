@@ -12,7 +12,7 @@ async function publishDue(): Promise<number> {
   const sb = createSupabaseAdminClient();
   const { data: due } = await sb
     .from("posts")
-    .select("id,caption,image_url,affiliate_url")
+    .select("id,caption,image_url,images,video_url,affiliate_url")
     .eq("status", "approved")
     .not("scheduled_at", "is", null)
     .lte("scheduled_at", new Date().toISOString())
@@ -24,6 +24,8 @@ async function publishDue(): Promise<number> {
       const { fbPostId } = await publishToFacebook({
         caption: p.caption || "",
         imageUrl: p.image_url,
+        images: p.images,
+        videoUrl: p.video_url,
         affiliateUrl: p.affiliate_url,
       });
       await sb
