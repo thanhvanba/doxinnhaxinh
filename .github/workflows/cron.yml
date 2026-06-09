@@ -1,0 +1,32 @@
+name: Cron đăng bài hẹn giờ
+
+# Gọi /api/cron/run định kỳ để:
+#  - đăng các bài "đã duyệt + tới giờ" (publishDue)
+#  - nhắc buổi sáng ~8h VN (maybeRemind)
+# Vì sao không dùng cron của Vercel: Hobby chỉ 1 lần/ngày → hẹn giờ không chuẩn.
+# GitHub Actions chạy "best-effort" (có thể trễ vài phút) nhưng đủ tốt cho fanpage.
+#
+# CẦN SET (Settings → Secrets and variables → Actions):
+#  - Secret  CRON_SECRET : trùng giá trị CRON_SECRET trên Vercel
+#  - Variable CRON_URL    : domain web, vd https://doxinnhaxinh.vercel.app (không dấu / cuối)
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # mỗi 15 phút (giờ UTC)
+  workflow_dispatch: {} # cho phép bấm "Run workflow" chạy tay để test
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gọi endpoint cron
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CRON_URL: ${{ vars.CRON_URL }}
+        run: |
+          BASE="${CRON_URL:-https://doxinnhaxinh.vercel.app}"
+          echo "→ POST $BASE/api/cron/run"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "$BASE/api/cron/run"
+          echo ""
