@@ -12,6 +12,8 @@ type DbProduct = {
   rating: number | null;
   reviews: number | null;
   image_url: string | null;
+  images: string[] | null;
+  shopee_item_id: string | null;
   affiliate_url: string;
   badge: string | null;
   sold: number | null;
@@ -31,7 +33,7 @@ export type CategoryRow = {
 };
 
 const COLS =
-  "id,slug,name,price,original_price,discount,rating,reviews,image_url,affiliate_url,badge,sold,category:categories(slug,name)";
+  "id,slug,name,price,original_price,discount,rating,reviews,image_url,images,shopee_item_id,affiliate_url,badge,sold,category:categories(slug,name)";
 
 function toProduct(r: DbProduct): Product {
   return {
@@ -43,7 +45,9 @@ function toProduct(r: DbProduct): Product {
     discount: r.discount ?? 0,
     rating: r.rating ?? 0,
     reviews: r.reviews ?? 0,
-    image: r.image_url ?? undefined,
+    image: r.image_url ?? r.images?.[0] ?? undefined,
+    images: r.images ?? undefined,
+    shopeeItemId: r.shopee_item_id ?? undefined,
     affiliateUrl: r.affiliate_url,
     badge: r.badge ?? undefined,
     sold: r.sold ?? 0,

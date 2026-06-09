@@ -40,8 +40,8 @@ export function ProductForm({
         {product && <input type="hidden" name="id" value={product.id} />}
         <input
           type="hidden"
-          name="current_image"
-          defaultValue={product?.image_url ?? ""}
+          name="current_images"
+          defaultValue={JSON.stringify(product?.images ?? [])}
         />
 
         <div>
@@ -75,6 +75,18 @@ export function ProductForm({
         <div>
           <label className={labelCls}>Slug (để trống = tự tạo từ tên)</label>
           <Input name="slug" defaultValue={product?.slug ?? ""} />
+        </div>
+
+        <div>
+          <label className={labelCls}>Mã sản phẩm Shopee (item_id)</label>
+          <Input
+            name="shopee_item_id"
+            placeholder="Tự tách từ link gốc — vd 22161970408"
+            defaultValue={product?.shopee_item_id ?? ""}
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Để trống → hệ thống tự lấy từ link gốc. Dùng để chống trùng sản phẩm.
+          </p>
         </div>
 
         <div className="grid grid-cols-2 gap-4">
@@ -146,23 +158,31 @@ export function ProductForm({
         </div>
 
         <div>
-          <label className={labelCls}>Ảnh sản phẩm</label>
-          {product?.image_url && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={product.image_url}
-              alt=""
-              className="mb-2 size-28 rounded-lg border object-cover"
-            />
+          <label className={labelCls}>Ảnh sản phẩm (gallery)</label>
+          {product?.images && product.images.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {product.images.map((url, i) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={url}
+                  src={url}
+                  alt=""
+                  className="size-28 rounded-lg border object-cover"
+                  title={i === 0 ? "Ảnh đại diện" : undefined}
+                />
+              ))}
+            </div>
           )}
           <input
-            name="image"
+            name="images"
             type="file"
             accept="image/*"
+            multiple
             className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium"
           />
           <p className="mt-1 text-xs text-muted-foreground">
-            Để trống nếu giữ ảnh cũ. Tải ảnh từ máy (tối đa 5MB).
+            Chọn được nhiều ảnh; ảnh đầu là ảnh đại diện. Ảnh mới sẽ nối thêm vào
+            gallery cũ. Để trống nếu giữ nguyên ảnh hiện tại.
           </p>
         </div>
 

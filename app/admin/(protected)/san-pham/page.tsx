@@ -1,38 +1,83 @@
 import Link from "next/link";
-import Image from "next/image";
-import { Plus, Pencil, ImageOff, Sparkles } from "lucide-react";
+import { Plus } from "lucide-react";
 
-import { adminGetProducts } from "@/lib/admin-products";
+import {
+  adminListProducts,
+  adminProductStatusCounts,
+  type ListParams,
+  type ProductSort,
+} from "@/lib/admin-products";
 import { getCategories } from "@/lib/products";
-import { formatPriceVND } from "@/lib/format";
-import { deleteProductAction } from "../../actions";
-import { createPostFromProductAction } from "../../post-actions";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { DeleteProductButton } from "@/components/admin/delete-button";
+import { ProductsToolbar } from "@/components/admin/products-toolbar";
+import { ProductsTable } from "@/components/admin/products-table";
 
 export const dynamic = "force-dynamic";
 
-function statusBadge(status: string) {
-  if (status === "published")
-    return <Badge variant="success">Đã đăng</Badge>;
-  if (status === "approved") return <Badge>Đã duyệt</Badge>;
-  return <Badge variant="secondary">Nháp</Badge>;
+type SP = Record<string, string | undefined>;
+
+/** Build href giữ nguyên các param hiện tại, ghi đè/loại bỏ theo `over`. */
+function hrefWith(sp: SP, over: Record<string, string | null>): string {
+  const next = new URLSearchParams();
+  for (const [k, v] of Object.entries(sp)) if (v) next.set(k, v);
+  for (const [k, v] of Object.entries(over)) {
+    if (v === null || v === "") next.delete(k);
+    else next.set(k, v);
+  }
+  const qs = next.toString();
+  return qs ? `/admin/san-pham?${qs}` : "/admin/san-pham";
 }
 
-export default async function AdminProductsPage() {
-  const [products, categories] = await Promise.all([
-    adminGetProducts(),
+const TABS: {
+  key: string;
+  label: string;
+  countKey: keyof Awaited<ReturnType<typeof adminProductStatusCounts>>;
+}[] = [
+  { key: "", label: "Tất cả", countKey: "all" },
+  { key: "draft", label: "Nháp", countKey: "draft" },
+  { key: "approved", label: "Đã duyệt", countKey: "approved" },
+  { key: "published", label: "Đã đăng", countKey: "published" },
+  { key: "archived", label: "Thùng rác", countKey: "archived" },
+];
+
+export default async function AdminProductsPage({
+  searchParams,
+}: {
+  searchParams: Promise<SP>;
+}) {
+  const sp = await searchParams;
+  const params: ListParams = {
+    q: sp.q,
+    cat: sp.cat,
+    status: sp.status,
+    featured: sp.featured === "1",
+    missing: sp.missing === "1",
+    sort: (sp.sort as ProductSort) || "new",
+    page: Number(sp.page) || 1,
+    pageSize: Number(sp.pageSize) || 15,
+  };
+
+  const [{ rows, total }, counts, categories] = await Promise.all([
+    adminListProducts(params),
+    adminProductStatusCounts(),
     getCategories(),
   ]);
   const catName = Object.fromEntries(categories.map((c) => [c.id, c.name]));
+
+  const page = params.page ?? 1;
+  const pageSize = params.pageSize ?? 15;
+  const from = (page - 1) * pageSize;
+  const shownTo = Math.min(from + pageSize, total);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const activeStatus = sp.status ?? "";
+  const isTrash = activeStatus === "archived";
+  const returnTo = hrefWith(sp, {});
 
   return (
     <div>
       <div className="flex items-center justify-between gap-4">
         <h1 className="font-display text-2xl font-extrabold">
-          Sản phẩm{" "}
-          <span className="text-muted-foreground">({products.length})</span>
+          Sản phẩm <span className="text-muted-foreground">({total})</span>
         </h1>
         <Button asChild className="font-semibold">
           <Link href="/admin/san-pham/moi">
@@ -41,59 +86,71 @@ export default async function AdminProductsPage() {
         </Button>
       </div>
 
-      <div className="mt-6 space-y-2">
-        {products.map((p) => (
-          <div
-            key={p.id}
-            className="flex items-center gap-4 rounded-xl border bg-card p-3 shadow-sm"
+      {/* Tabs trạng thái (có số đếm) */}
+      <div className="mt-5 flex flex-wrap gap-1 border-b">
+        {TABS.map((t) => {
+          const active = activeStatus === t.key;
+          return (
+            <Link
+              key={t.key || "all"}
+              href={hrefWith(sp, { status: t.key || null, page: null })}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                active
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {t.label}{" "}
+              <span className="text-xs text-muted-foreground">
+                {counts[t.countKey]}
+              </span>
+            </Link>
+          );
+        })}
+      </div>
+
+      <div className="mt-4">
+        <ProductsToolbar categories={categories} />
+      </div>
+
+      <div className="mt-4">
+        <ProductsTable
+          rows={rows}
+          categories={categories}
+          catName={catName}
+          isTrash={isTrash}
+          returnTo={returnTo}
+        />
+      </div>
+
+      {/* Phân trang */}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+        <span>
+          {total > 0 ? `${from + 1}–${shownTo}` : 0} / {total}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className={page <= 1 ? "pointer-events-none opacity-50" : ""}
           >
-            <div className="relative size-14 shrink-0 overflow-hidden rounded-lg bg-muted">
-              {p.image_url ? (
-                <Image
-                  src={p.image_url}
-                  alt={p.name}
-                  fill
-                  sizes="56px"
-                  className="object-cover"
-                />
-              ) : (
-                <div className="flex size-full items-center justify-center text-muted-foreground">
-                  <ImageOff className="size-5" />
-                </div>
-              )}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <p className="line-clamp-1 text-sm font-semibold">{p.name}</p>
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                <span>
-                  {p.price > 0 ? formatPriceVND(p.price) : "Chưa có giá"}
-                </span>
-                <span>·</span>
-                <span>{p.category_id ? catName[p.category_id] : "Chưa phân loại"}</span>
-                {p.is_featured && <span className="text-primary">Nổi bật</span>}
-                {p.is_flash_deal && <span className="text-destructive">Flash</span>}
-                {!p.image_url && <span className="text-destructive">Thiếu ảnh</span>}
-              </div>
-            </div>
-
-            <div className="hidden sm:block">{statusBadge(p.status)}</div>
-
-            <form action={createPostFromProductAction} className="hidden md:block">
-              <input type="hidden" name="product_id" value={p.id} />
-              <Button type="submit" variant="secondary" size="sm">
-                <Sparkles className="size-3.5" /> Tạo bài
-              </Button>
-            </form>
-
-            <Button asChild variant="outline" size="sm">
-              <Link href={`/admin/san-pham/${p.id}`}>
-                <Pencil className="size-3.5" /> Sửa
-              </Link>
-            </Button>
-            <DeleteProductButton id={p.id} action={deleteProductAction} />
-          </div>
-        ))}
+            <Link href={hrefWith(sp, { page: page > 2 ? String(page - 1) : null })}>
+              ‹ Trước
+            </Link>
+          </Button>
+          <span>
+            Trang {page}/{totalPages}
+          </span>
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className={page >= totalPages ? "pointer-events-none opacity-50" : ""}
+          >
+            <Link href={hrefWith(sp, { page: String(page + 1) })}>Sau ›</Link>
+          </Button>
+        </div>
       </div>
     </div>
   );
