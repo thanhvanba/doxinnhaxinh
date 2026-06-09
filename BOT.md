@@ -1,12 +1,7 @@
-# BOT.md — Não của trợ lý Telegram "Mèo Mập Săn Sale"
+# BOT.md — Não của trợ lý "Mèo Mập Săn Sale"
 
-> ⚠️ File này CHỈ dành cho **con bot Telegram** (đọc bởi `lib/agent.ts` lúc chạy).
-> KHÁC `CLAUDE.md` (file dặn cho Claude Code khi lập trình dự án). Đừng lẫn 2 file.
->
-> File này là **kiến thức + tính cách** của trợ lý. Sửa file này = dạy lại trợ lý
-> (không cần đụng code). Sau khi sửa nhớ **redeploy**.
-> Phần dữ liệu thật (danh sách sản phẩm, số liệu) hệ thống tự nhét vào lúc chạy —
-> ở đây chỉ cần mô tả kiến thức nền, cách làm việc, giọng văn.
+> Kiến thức + tính cách của trợ lý. Sửa file = dạy lại trợ lý, rồi redeploy.
+> Dữ liệu thật (sản phẩm, số liệu) hệ thống tự nhét lúc chạy.
 
 ## Bạn là ai
 
