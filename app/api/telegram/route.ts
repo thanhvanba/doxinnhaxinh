@@ -6,6 +6,13 @@ import { adminGetProduct } from "@/lib/admin-products";
 import { adminGetPost } from "@/lib/posts";
 import { generateCaption } from "@/lib/caption";
 import { publishToFacebook } from "@/lib/facebook";
+import {
+  chatAgent,
+  type AgentAction,
+  listMemories,
+  saveMemory,
+  deleteMemory,
+} from "@/lib/agent";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatPriceVND } from "@/lib/format";
 import {
@@ -42,10 +49,12 @@ Trợ lý đăng bài fanpage — ra lệnh từ đây.
 <b>Lệnh:</b>
 /hot — sản phẩm hot → tạo bài (đăng ngay / hẹn giờ)
 /thongke — số liệu: click, bài đã đăng
+/nho — xem/xóa những điều em đang nhớ
 /help — hướng dẫn
 
 ➕ Dán <b>link sản phẩm Shopee</b> → bot tự thêm vào kho.
-Mẹo: gõ "<i>đăng gì hôm nay</i>" cũng được.`;
+💬 Cứ <b>nhắn tự nhiên</b> — hỏi gì, dặn gì, bảo đăng gì... em hiểu hết.
+Mẹo: "đăng gì hôm nay", "tạo bài cho máy xay", "nhớ giùm anh đăng lúc 20h".`;
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -138,6 +147,7 @@ async function addProductFromUrl(chatId: number | string, url: string) {
         name,
         slug,
         price: 0,
+        shopee_item_id: ids?.itemId ?? null,
         affiliate_url: affiliate,
         source: "manual",
         status: "draft",
@@ -147,14 +157,133 @@ async function addProductFromUrl(chatId: number | string, url: string) {
     .select("id")
     .single();
   if (error || !data) {
-    await sendMessage(chatId, `❌ Lỗi thêm SP: ${error?.message || "?"}`);
+    // 23505 = trùng unique (item_id đã có trong kho với slug khác).
+    if ((error as { code?: string } | null)?.code === "23505") {
+      await sendMessage(chatId, "ℹ️ Sản phẩm này đã có trong kho rồi.");
+    } else {
+      await sendMessage(chatId, `❌ Lỗi thêm SP: ${error?.message || "?"}`);
+    }
     return;
   }
   await sendMessage(
     chatId,
-    `✅ Đã thêm: <b>${name}</b> (nháp)\nVào admin điền giá/ảnh, hoặc tạo bài luôn:`,
+    `✅ Đã thêm: <b>${name}</b> (nháp)\n` +
+      `⚠️ Chưa có ảnh/giá — bấm 🐱 (userscript) trong tab Shopee để lấy ảnh+video, hoặc vào admin điền tay.\n` +
+      `Tạo bài luôn cũng được (sẽ đăng dạng chữ nếu chưa có ảnh):`,
     [[{ text: "✍️ Tạo bài ngay", callback_data: `taobai:${data.id}` }]],
   );
+}
+
+/** Tạo bản nháp bài đăng cho 1 sản phẩm: AI viết caption → gửi preview + nút. */
+async function startPostDraft(chatId: number | string, productId: string) {
+  const product = await adminGetProduct(productId);
+  if (!product) {
+    await sendMessage(chatId, "Không tìm thấy sản phẩm.");
+    return;
+  }
+  await sendMessage(chatId, "✍️ Đang viết caption...");
+  let caption = "";
+  let error: string | null = null;
+  try {
+    caption = await generateCaption(product);
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+  }
+  const sb = createSupabaseAdminClient();
+  const { data: post } = await sb
+    .from("posts")
+    .insert({
+      product_id: product.id,
+      caption,
+      image_url: product.image_url,
+      images: product.images ?? [],
+      video_url: product.video_url,
+      affiliate_url: product.affiliate_url,
+      status: "draft",
+      channel: "facebook",
+      created_by: "agent",
+      error,
+    })
+    .select("id")
+    .single();
+
+  if (error || !post) {
+    await sendMessage(chatId, `❌ Lỗi viết caption: ${error || "không lưu được"}`);
+    return;
+  }
+  const noImageWarn = product.image_url
+    ? ""
+    : "⚠️ <i>SP chưa có ảnh → đăng dạng chữ. Bấm 🐱 userscript trong tab Shopee để lấy ảnh+video trước.</i>\n\n";
+  await sendMessage(
+    chatId,
+    `📝 <b>Bản nháp:</b>\n\n${noImageWarn}${caption}\n\n${product.price > 0 ? formatPriceVND(product.price) : ""}`,
+    [
+      [{ text: "✅ Đăng ngay", callback_data: `dang:${post.id}` }],
+      [
+        { text: "🌙 Hẹn 20h", callback_data: `lich:${post.id}:20` },
+        { text: "🌅 Hẹn 8h sáng", callback_data: `lich:${post.id}:8` },
+      ],
+      [{ text: "❌ Hủy", callback_data: `huy:${post.id}` }],
+    ],
+  );
+}
+
+/** Tạo bài theo TÊN sản phẩm (cho lệnh bằng lời của trợ lý). */
+async function startPostDraftByQuery(chatId: number | string, query: string) {
+  const sb = createSupabaseAdminClient();
+  const { data } = await sb
+    .from("products")
+    .select("id,name")
+    .ilike("name", `%${query}%`)
+    .limit(5);
+  if (!data || data.length === 0) {
+    await sendMessage(chatId, `Không tìm thấy sản phẩm khớp "<b>${query}</b>".`);
+    return;
+  }
+  if (data.length === 1) {
+    await startPostDraft(chatId, data[0].id);
+    return;
+  }
+  // Nhiều kết quả → cho chọn.
+  await sendMessage(
+    chatId,
+    `Tìm thấy ${data.length} sản phẩm khớp "<b>${query}</b>" — chọn cái cần tạo bài:`,
+    data.map((p) => [
+      { text: p.name.slice(0, 50), callback_data: `taobai:${p.id}` },
+    ]),
+  );
+}
+
+/** Liệt kê trí nhớ dài hạn + nút xóa từng dòng. */
+async function showMemories(chatId: number | string) {
+  const mems = await listMemories();
+  if (mems.length === 0) {
+    await sendMessage(
+      chatId,
+      "🧠 Trí nhớ trống. Cứ dặn em \"nhớ giùm anh ...\" là em ghi lại nha.",
+    );
+    return;
+  }
+  const list = mems.map((m, i) => `${i + 1}. ${m.content}`).join("\n");
+  await sendMessage(
+    chatId,
+    `🧠 <b>Em đang nhớ ${mems.length} điều:</b>\n${list}\n\nBấm để xóa:`,
+    mems.map((m) => [
+      { text: `🗑️ ${m.content.slice(0, 40)}`, callback_data: `quenmem:${m.id}` },
+    ]),
+  );
+}
+
+/** Thực thi ACTION do trợ lý phát ra. */
+async function executeAction(chatId: number | string, action: AgentAction) {
+  if (!action) return;
+  if (action.kind === "hot") await showHot(chatId);
+  else if (action.kind === "stats") await showStats(chatId);
+  else if (action.kind === "taobai") await startPostDraftByQuery(chatId, action.query);
+  else if (action.kind === "nho") {
+    await saveMemory(action.content);
+    await sendMessage(chatId, `🧠 <i>Đã ghi nhớ:</i> ${action.content}`);
+  }
 }
 
 async function handleMessage(msg: any) {
@@ -186,20 +315,24 @@ async function handleMessage(msg: any) {
     await showStats(chatId);
     return;
   }
+  if (text.startsWith("/nho")) {
+    await showMemories(chatId);
+    return;
+  }
   if (text.startsWith("/start") || text.startsWith("/help") || text === "/menu") {
     await sendMessage(chatId, WELCOME);
     return;
   }
-  if (
-    text.startsWith("/hot") ||
-    text.includes("hot") ||
-    text.includes("đăng gì") ||
-    text.includes("hôm nay")
-  ) {
+  if (text.startsWith("/hot")) {
     await showHot(chatId);
     return;
   }
-  await sendMessage(chatId, "Chưa hiểu. Gõ /help · /hot · /thongke, hoặc dán link Shopee.");
+
+  // Mọi tin nhắn còn lại → trợ lý AI (nói chuyện tự nhiên + có thể tự phát lệnh).
+  if (!raw) return;
+  const { reply, action } = await chatAgent(String(chatId), raw);
+  if (reply) await sendMessage(chatId, reply);
+  await executeAction(chatId, action);
 }
 
 async function handleCallback(cq: any) {
@@ -213,50 +346,7 @@ async function handleCallback(cq: any) {
   // Tạo bài: AI viết caption -> lưu nháp -> nút Đăng ngay / Hẹn giờ / Hủy
   if (data.startsWith("taobai:")) {
     const productId = data.slice("taobai:".length);
-    const product = await adminGetProduct(productId);
-    if (!product) {
-      await sendMessage(chatId, "Không tìm thấy sản phẩm.");
-      return;
-    }
-    await sendMessage(chatId, "✍️ Đang viết caption...");
-    let caption = "";
-    let error: string | null = null;
-    try {
-      caption = await generateCaption(product);
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-    const { data: post } = await sb
-      .from("posts")
-      .insert({
-        product_id: product.id,
-        caption,
-        image_url: product.image_url,
-        affiliate_url: product.affiliate_url,
-        status: "draft",
-        channel: "facebook",
-        created_by: "agent",
-        error,
-      })
-      .select("id")
-      .single();
-
-    if (error || !post) {
-      await sendMessage(chatId, `❌ Lỗi viết caption: ${error || "không lưu được"}`);
-      return;
-    }
-    await sendMessage(
-      chatId,
-      `📝 <b>Bản nháp:</b>\n\n${caption}\n\n${product.price > 0 ? formatPriceVND(product.price) : ""}`,
-      [
-        [{ text: "✅ Đăng ngay", callback_data: `dang:${post.id}` }],
-        [
-          { text: "🌙 Hẹn 20h", callback_data: `lich:${post.id}:20` },
-          { text: "🌅 Hẹn 8h sáng", callback_data: `lich:${post.id}:8` },
-        ],
-        [{ text: "❌ Hủy", callback_data: `huy:${post.id}` }],
-      ],
-    );
+    await startPostDraft(chatId, productId);
     return;
   }
 
@@ -284,6 +374,8 @@ async function handleCallback(cq: any) {
       const { fbPostId } = await publishToFacebook({
         caption: post.caption || "",
         imageUrl: post.image_url,
+        images: post.images,
+        videoUrl: post.video_url,
         affiliateUrl: post.affiliate_url,
       });
       await sb
@@ -309,6 +401,16 @@ async function handleCallback(cq: any) {
     const postId = data.slice("huy:".length);
     await sb.from("posts").delete().eq("id", postId);
     await sendMessage(chatId, "🗑️ Đã hủy bản nháp.");
+    return;
+  }
+
+  // Xóa 1 điều trong trí nhớ dài hạn
+  if (data.startsWith("quenmem:")) {
+    const id = Number(data.slice("quenmem:".length));
+    if (!Number.isNaN(id)) {
+      await deleteMemory(id);
+      await sendMessage(chatId, "🧠 Đã quên điều đó.");
+    }
     return;
   }
 }
