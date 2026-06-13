@@ -49,6 +49,8 @@ Trợ lý đăng bài fanpage — ra lệnh từ đây.
 <b>Lệnh:</b>
 /hot — sản phẩm hot → tạo bài (đăng ngay / hẹn giờ)
 /thongke — số liệu: click, bài đã đăng
+/timhang — điều hướng tới trang Shopee hàng hot (bấm 🔥)
+/duyet — hàng mới (draft) chờ duyệt → tạo bài
 /nho — xem/xóa những điều em đang nhớ
 /help — hướng dẫn
 
@@ -71,6 +73,47 @@ async function showHot(chatId: number | string) {
     },
   ]);
   await sendMessage(chatId, "🔥 <b>Sản phẩm hot</b> — bấm để AI viết bài:", buttons);
+}
+
+/** Hàng mới (draft) chờ duyệt — gồm hàng quét trending + dán link. */
+async function showDrafts(chatId: number | string) {
+  const sb = createSupabaseAdminClient();
+  const { data } = await sb
+    .from("products")
+    .select("id,name,source,image_url")
+    .eq("status", "draft")
+    .order("created_at", { ascending: false })
+    .limit(10);
+  if (!data || data.length === 0) {
+    await sendMessage(chatId, "Không có hàng nháp nào chờ duyệt. Dùng 🔥 userscript để quét hàng hot.");
+    return;
+  }
+  const buttons: InlineButton[][] = data.map((p, i) => [
+    {
+      text: `${i + 1}. ${p.source === "trending" ? "🔥" : ""}${p.image_url ? "" : "📷"} ${p.name.slice(0, 40)}`,
+      callback_data: `taobai:${p.id}`,
+    },
+  ]);
+  await sendMessage(
+    chatId,
+    `📥 <b>${data.length} hàng nháp chờ duyệt</b> (🔥=trending · 📷=chưa có ảnh) — bấm để tạo bài:`,
+    buttons,
+  );
+}
+
+/** Điều hướng anh tới trang Shopee hàng hot + nhắc bấm 🔥 (bot không tự quét được). */
+async function showFindGuide(chatId: number | string) {
+  await sendMessage(
+    chatId,
+    `🧭 <b>Tìm hàng xu hướng</b>\n` +
+      `Shopee chặn em quét tự động, nên anh mở 1 trong các trang sau (đã đăng nhập), ` +
+      `bấm nút <b>🔥 Lấy hàng hot</b> rồi quay lại bấm /duyet để đăng:\n\n` +
+      `🔥 <a href="https://shopee.vn/flash_sale">Flash Sale</a>\n` +
+      `🏠 <a href="https://shopee.vn/search?keyword=đồ%20gia%20dụng&sortBy=sales">Đồ gia dụng bán chạy</a>\n` +
+      `🛋️ <a href="https://shopee.vn/search?keyword=decor%20nhà&sortBy=sales">Decor nhà bán chạy</a>\n` +
+      `🛏️ <a href="https://shopee.vn/search?keyword=nội%20thất&sortBy=sales">Nội thất bán chạy</a>\n\n` +
+      `Mẹo: trang search nhớ chọn sắp xếp "<i>Bán chạy</i>" rồi mới bấm 🔥.`,
+  );
 }
 
 async function showStats(chatId: number | string) {
@@ -278,6 +321,8 @@ async function showMemories(chatId: number | string) {
 async function executeAction(chatId: number | string, action: AgentAction) {
   if (!action) return;
   if (action.kind === "hot") await showHot(chatId);
+  else if (action.kind === "timhang") await showFindGuide(chatId);
+  else if (action.kind === "duyet") await showDrafts(chatId);
   else if (action.kind === "stats") await showStats(chatId);
   else if (action.kind === "taobai") await startPostDraftByQuery(chatId, action.query);
   else if (action.kind === "nho") {
@@ -313,6 +358,14 @@ async function handleMessage(msg: any) {
   }
   if (text.startsWith("/thongke") || text.includes("thống kê")) {
     await showStats(chatId);
+    return;
+  }
+  if (text.startsWith("/timhang")) {
+    await showFindGuide(chatId);
+    return;
+  }
+  if (text.startsWith("/duyet")) {
+    await showDrafts(chatId);
     return;
   }
   if (text.startsWith("/nho")) {

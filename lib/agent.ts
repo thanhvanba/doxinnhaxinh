@@ -12,6 +12,8 @@ import { formatPriceVND } from "./format";
 
 export type AgentAction =
   | { kind: "hot" }
+  | { kind: "timhang" }
+  | { kind: "duyet" }
   | { kind: "stats" }
   | { kind: "taobai"; query: string }
   | { kind: "nho"; content: string }
@@ -143,6 +145,8 @@ async function buildSnapshot(): Promise<string> {
 const PROTOCOL = `## CÁCH PHÁT LỆNH (quan trọng)
 Khi anh Thành MUỐN THỰC HIỆN một việc, hãy trả lời ngắn gọn rồi xuống dòng CUỐI CÙNG ghi đúng 1 lệnh theo mẫu (không thêm chữ nào khác trên dòng đó):
 - ACTION: HOT        → khi muốn xem/đăng sản phẩm hot, "đăng gì hôm nay"
+- ACTION: TIMHANG    → khi muốn "tìm hàng mới", "kiếm hàng hot", "lấy hàng về" (bot điều hướng tới Shopee)
+- ACTION: DUYET      → khi hỏi "hàng mới", "ứng viên", "hàng nháp chờ duyệt", "có hàng gì mới"
 - ACTION: STATS      → khi hỏi số liệu/thống kê/hiệu quả
 - ACTION: TAOBAI <từ khóa tên sản phẩm>  → khi muốn tạo bài đăng cho 1 sản phẩm cụ thể
 - ACTION: NHO <điều cần nhớ>  → khi anh Thành dặn "nhớ giùm...", hoặc khi học được một SỞ THÍCH / QUYẾT ĐỊNH / NỘI QUY lâu dài đáng nhớ. Viết ngắn gọn 1 câu. KHÔNG ghi nhớ chuyện vặt/nhất thời/đã có trong trí nhớ.
@@ -185,7 +189,7 @@ function parseAction(text: string): { reply: string; action: AgentAction } {
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = lines[i]
       .trim()
-      .match(/^ACTION:\s*(HOT|STATS|TAOBAI|NHO)(?:\s+([\s\S]*))?$/i);
+      .match(/^ACTION:\s*(HOT|TIMHANG|DUYET|STATS|TAOBAI|NHO)(?:\s+([\s\S]*))?$/i);
     if (m) {
       const kind = m[1].toUpperCase();
       const arg = (m[2] || "").trim();
@@ -193,6 +197,8 @@ function parseAction(text: string): { reply: string; action: AgentAction } {
       const reply = lines.join("\n").trim();
       let action: AgentAction = null;
       if (kind === "HOT") action = { kind: "hot" };
+      else if (kind === "TIMHANG") action = { kind: "timhang" };
+      else if (kind === "DUYET") action = { kind: "duyet" };
       else if (kind === "STATS") action = { kind: "stats" };
       else if (kind === "TAOBAI" && arg) action = { kind: "taobai", query: arg };
       else if (kind === "NHO" && arg) action = { kind: "nho", content: arg };
