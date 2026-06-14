@@ -3,6 +3,7 @@ import path from "path";
 
 import { createSupabaseAdminClient } from "./supabase/admin";
 import { formatPriceVND } from "./format";
+import { chatCompletion, type ChatMessage } from "./ai";
 
 /**
  * Trợ lý AI Telegram: nạp BOT.md (kiến thức bot — KHÁC CLAUDE.md vốn dành cho
@@ -63,14 +64,6 @@ export async function deleteMemory(id: number): Promise<void> {
   } catch {
     // chịu lỗi mềm
   }
-}
-
-/** Bỏ phần suy nghĩ của model reasoning. */
-function stripThinking(s: string): string {
-  return s
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
-    .trim();
 }
 
 /** Đọc BOT.md — não con bot (cache theo cold-start). */
@@ -149,9 +142,13 @@ Khi anh Thành MUỐN THỰC HIỆN một việc, hãy trả lời ngắn gọn 
 - ACTION: DUYET      → khi hỏi "hàng mới", "ứng viên", "hàng nháp chờ duyệt", "có hàng gì mới"
 - ACTION: STATS      → khi hỏi số liệu/thống kê/hiệu quả
 - ACTION: TAOBAI <từ khóa tên sản phẩm>  → khi muốn tạo bài đăng cho 1 sản phẩm cụ thể
-- ACTION: NHO <điều cần nhớ>  → khi anh Thành dặn "nhớ giùm...", hoặc khi học được một SỞ THÍCH / QUYẾT ĐỊNH / NỘI QUY lâu dài đáng nhớ. Viết ngắn gọn 1 câu. KHÔNG ghi nhớ chuyện vặt/nhất thời/đã có trong trí nhớ.
-Nếu chỉ hỏi đáp/tư vấn thông thường thì KHÔNG ghi dòng ACTION.
-Mỗi lượt chỉ tối đa 1 dòng ACTION.`;
+- ACTION: NHO <điều cần nhớ>  → HÃY CHỦ ĐỘNG ghi nhớ, không cần đợi anh Thành dặn. Bất cứ khi nào trong cuộc trò chuyện anh để lộ một SỞ THÍCH, QUYẾT ĐỊNH, NỘI QUY, THÓI QUEN, hay THÔNG TIN về shop/bản thân đáng nhớ lâu dài → tự ghi lại để lần sau dùng. Viết ngắn gọn 1 câu, ngôi thứ 3 ("Anh Thành thích..."). KHÔNG ghi chuyện vặt/nhất thời/đã có trong trí nhớ. Mỗi lượt tối đa 1 NHO.
+QUY TẮC SẮT (tránh phát lệnh bừa):
+- MẶC ĐỊNH là KHÔNG có dòng ACTION. Chỉ thêm ACTION (HOT/TIMHANG/DUYET/STATS/TAOBAI) khi tin nhắn HIỆN TẠI của anh Thành YÊU CẦU RÕ RÀNG đúng việc đó.
+- Trò chuyện, hỏi đáp, giải thích, chào hỏi, anh kể chuyện → TUYỆT ĐỐI KHÔNG ACTION (trừ NHO nếu có gì đáng nhớ).
+- Nếu không chắc anh có muốn thực hiện không → KHÔNG ACTION, cứ hỏi lại.
+- Đừng lặp lại 1 ACTION ở các lượt liên tiếp nếu anh không yêu cầu lại.
+- Mỗi lượt tối đa 1 dòng ACTION, và phải nằm RIÊNG ở dòng cuối cùng.`;
 
 type ChatMsg = { role: "user" | "assistant"; content: string };
 
@@ -213,17 +210,6 @@ export async function chatAgent(
   chatId: string,
   userText: string,
 ): Promise<{ reply: string; action: AgentAction }> {
-  const key = process.env.AI_API_KEY;
-  if (!key) {
-    return {
-      reply:
-        "Trợ lý chưa cấu hình AI_API_KEY. Tạm thời dùng lệnh: /hot · /thongke · /nho.",
-      action: null,
-    };
-  }
-  const baseUrl = process.env.AI_BASE_URL || "https://opencode.ai/zen/v1";
-  const model = process.env.AI_MODEL || "mimo-v2.5-free";
-
   const [snapshot, history, memories] = await Promise.all([
     buildSnapshot(),
     loadHistory(chatId),
@@ -238,7 +224,7 @@ export async function chatAgent(
 
   const system = `${loadAgentMd()}\n\n${memoryBlock}\n\n${snapshot}\n\n${PROTOCOL}`;
 
-  const messages = [
+  const messages: ChatMessage[] = [
     { role: "system", content: system },
     ...history,
     { role: "user", content: userText },
@@ -246,16 +232,7 @@ export async function chatAgent(
 
   let raw = "";
   try {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, max_tokens: 1000, messages }),
-    });
-    const json = await res.json();
-    if (!res.ok || json.error) {
-      throw new Error(json.error?.message || res.statusText);
-    }
-    raw = json.choices?.[0]?.message?.content || "";
+    raw = await chatCompletion(messages, { maxTokens: 1000 });
   } catch (e) {
     return {
       reply: `Trợ lý lỗi khi gọi AI: ${e instanceof Error ? e.message : e}. Thử lại hoặc dùng lệnh /hot.`,
@@ -263,7 +240,7 @@ export async function chatAgent(
     };
   }
 
-  const text = stripThinking(raw) || "Em chưa rõ ý anh, anh nói lại giúp em nha.";
+  const text = raw || "Em chưa rõ ý anh, anh nói lại giúp em nha.";
   const { reply, action } = parseAction(text);
 
   // Lưu lượt (lưu reply ĐÃ tách action cho gọn lịch sử).

@@ -13,6 +13,7 @@ import {
   saveMemory,
   deleteMemory,
 } from "@/lib/agent";
+import { listKeys, addKey, deleteKey } from "@/lib/ai";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatPriceVND } from "@/lib/format";
 import {
@@ -52,6 +53,7 @@ Trợ lý đăng bài fanpage — ra lệnh từ đây.
 /timhang — điều hướng tới trang Shopee hàng hot (bấm 🔥)
 /duyet — hàng mới (draft) chờ duyệt → tạo bài
 /nho — xem/xóa những điều em đang nhớ
+/key — quản lý API key (thêm/xóa, tự xoay vòng)
 /help — hướng dẫn
 
 ➕ Dán <b>link sản phẩm Shopee</b> → bot tự thêm vào kho.
@@ -317,6 +319,47 @@ async function showMemories(chatId: number | string) {
   );
 }
 
+/** Quản lý pool API key: /key [list] · /key add <KEY> [ghi chú] · /key del <id> */
+async function handleKeyCommand(chatId: number | string, raw: string) {
+  const parts = raw.trim().split(/\s+/);
+  const sub = (parts[1] || "list").toLowerCase();
+
+  if (sub === "add") {
+    const k = parts[2];
+    if (!k) {
+      await sendMessage(chatId, "Cú pháp: <code>/key add &lt;API_KEY&gt; [ghi chú]</code>");
+      return;
+    }
+    await addKey(k, parts.slice(3).join(" ") || undefined);
+    await sendMessage(chatId, `✅ Đã thêm key (…${k.slice(-4)}). Pool tự dùng ngay, khỏi deploy.`);
+    return;
+  }
+  if (sub === "del" || sub === "xoa") {
+    const id = Number(parts[2]);
+    if (Number.isNaN(id)) {
+      await sendMessage(chatId, "Cú pháp: <code>/key del &lt;id&gt;</code> (xem id ở /key list)");
+      return;
+    }
+    await deleteKey(id);
+    await sendMessage(chatId, `🗑️ Đã xóa key #${id}.`);
+    return;
+  }
+  // list
+  const keys = await listKeys();
+  if (!keys.length) {
+    await sendMessage(chatId, "Chưa có API key nào. Thêm: <code>/key add &lt;KEY&gt;</code>");
+    return;
+  }
+  const lines = keys
+    .map((k) => `#${k.id} ${k.masked}${k.label ? ` (${k.label})` : ""}${k.active ? "" : " ⛔"}`)
+    .join("\n");
+  await sendMessage(
+    chatId,
+    `🔑 <b>${keys.length} API key</b> (pool tự xoay vòng):\n${lines}\n\n` +
+      `Thêm: <code>/key add &lt;KEY&gt; [ghi chú]</code> · Xóa: <code>/key del &lt;id&gt;</code>`,
+  );
+}
+
 /** Thực thi ACTION do trợ lý phát ra. */
 async function executeAction(chatId: number | string, action: AgentAction) {
   if (!action) return;
@@ -340,6 +383,17 @@ async function handleMessage(msg: any) {
   }
   const raw: string = (msg.text || "").trim();
   const text = raw.toLowerCase();
+
+  // Dán thẳng API key → tự thêm vào pool (Gemini AIza… / AQ.… / OpenAI sk-…)
+  if (/^(AIza[\w-]{20,}|AQ\.[A-Za-z0-9._-]{20,}|sk-[\w-]{20,})$/.test(raw)) {
+    const id = await addKey(raw);
+    await sendMessage(
+      chatId,
+      `🔑 Đã thêm key (…${raw.slice(-4)}) vào pool. Tự xoay vòng, khỏi deploy.`,
+      id ? [[{ text: "🗑️ Hủy (lỡ dán nhầm)", callback_data: `delkey:${id}` }]] : undefined,
+    );
+    return;
+  }
 
   // Dán link Shopee → thêm sản phẩm
   const urlMatch = raw.match(/https?:\/\/[^\s]+/);
@@ -370,6 +424,10 @@ async function handleMessage(msg: any) {
   }
   if (text.startsWith("/nho")) {
     await showMemories(chatId);
+    return;
+  }
+  if (text.startsWith("/key")) {
+    await handleKeyCommand(chatId, raw);
     return;
   }
   if (text.startsWith("/start") || text.startsWith("/help") || text === "/menu") {
@@ -454,6 +512,16 @@ async function handleCallback(cq: any) {
     const postId = data.slice("huy:".length);
     await sb.from("posts").delete().eq("id", postId);
     await sendMessage(chatId, "🗑️ Đã hủy bản nháp.");
+    return;
+  }
+
+  // Hủy key vừa thêm (lỡ dán nhầm)
+  if (data.startsWith("delkey:")) {
+    const id = Number(data.slice("delkey:".length));
+    if (!Number.isNaN(id)) {
+      await deleteKey(id);
+      await sendMessage(chatId, "🗑️ Đã xóa key.");
+    }
     return;
   }
 
