@@ -22,37 +22,68 @@ function trimSlash(s: string): string {
   return s.replace(/\/+$/, "");
 }
 
-/** Key từ bảng ai_keys (active). Chịu lỗi mềm nếu bảng chưa có. */
-async function dbKeys(): Promise<string[]> {
+/** Preset nhà cung cấp (endpoint chuẩn OpenAI) → khai nhanh khi /key add. */
+export const PROVIDER_PRESETS: Record<string, { base: string; model: string }> = {
+  gemini: { base: "https://generativelanguage.googleapis.com/v1beta/openai/", model: "gemini-flash-latest" },
+  anthropic: { base: "https://api.anthropic.com/v1/", model: "claude-haiku-4-5" },
+  deepseek: { base: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  kimi: { base: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
+  openrouter: { base: "https://openrouter.ai/api/v1", model: "google/gemini-2.0-flash-exp:free" },
+  opencode: { base: "https://opencode.ai/zen/v1", model: "mimo-v2.5-free" },
+};
+
+function envBaseModel() {
+  return {
+    base: process.env.AI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/",
+    model: process.env.AI_MODEL || "gemini-flash-latest",
+  };
+}
+
+type DbKeyRow = { api_key: string; base_url: string | null; model: string | null };
+
+/** Key từ bảng ai_keys (active). Chịu lỗi mềm nếu bảng/ cột chưa có. */
+async function dbRows(): Promise<DbKeyRow[]> {
   try {
     const sb = createSupabaseAdminClient();
     const { data, error } = await sb
       .from("ai_keys")
-      .select("api_key")
+      .select("api_key,base_url,model")
       .eq("active", true)
       .order("created_at", { ascending: true });
     if (error || !data) return [];
-    return data.map((r) => r.api_key).filter(Boolean);
+    return data as DbKeyRow[];
   } catch {
     return [];
   }
 }
 
-/** Danh sách (baseUrl, key, model) sẽ thử lần lượt: key DB trước, rồi env. */
+/** Danh sách provider thử lần lượt: mỗi key tự mang base+model (DB trước, rồi env). */
 async function loadProviders(): Promise<Provider[]> {
-  const base =
-    process.env.AI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/";
-  const model = process.env.AI_MODEL || "gemini-flash-latest";
+  const env = envBaseModel();
+
+  const dbProvs: Provider[] = (await dbRows()).map((r) => ({
+    baseUrl: r.base_url || env.base,
+    apiKey: r.api_key,
+    model: r.model || env.model,
+  }));
 
   const envRaw = process.env.AI_API_KEYS || process.env.AI_API_KEY || "";
-  const envKeys = envRaw.split(",").map((s) => s.trim()).filter(Boolean);
+  const envProvs: Provider[] = envRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((apiKey) => ({ baseUrl: env.base, apiKey, model: env.model }));
 
-  // Key DB ưu tiên trước, gộp env, bỏ trùng.
-  const all = [...(await dbKeys()), ...envKeys];
-  const uniq = [...new Set(all)];
-  const list: Provider[] = uniq.map((apiKey) => ({ baseUrl: base, apiKey, model }));
+  // Gộp, bỏ trùng theo apiKey (DB ưu tiên).
+  const seen = new Set<string>();
+  const list: Provider[] = [];
+  for (const p of [...dbProvs, ...envProvs]) {
+    if (seen.has(p.apiKey)) continue;
+    seen.add(p.apiKey);
+    list.push(p);
+  }
 
-  // Nhà cung cấp dự phòng (khác provider) khi hết sạch key chính.
+  // Nhà cung cấp dự phòng cuối (env AI_FALLBACK_*).
   const fbBase = process.env.AI_FALLBACK_BASE_URL;
   const fbKey = process.env.AI_FALLBACK_KEY;
   const fbModel = process.env.AI_FALLBACK_MODEL;
@@ -63,7 +94,13 @@ async function loadProviders(): Promise<Provider[]> {
 }
 
 // ---- Quản lý key (cho bot/admin) ----
-export type AiKeyRow = { id: number; label: string | null; active: boolean; masked: string };
+export type AiKeyRow = {
+  id: number;
+  label: string | null;
+  active: boolean;
+  masked: string;
+  model: string;
+};
 
 function mask(k: string): string {
   return k.length <= 6 ? "••••" : `••••${k.slice(-4)}`;
@@ -73,22 +110,32 @@ export async function listKeys(): Promise<AiKeyRow[]> {
   const sb = createSupabaseAdminClient();
   const { data, error } = await sb
     .from("ai_keys")
-    .select("id,api_key,label,active")
+    .select("id,api_key,label,active,model")
     .order("created_at", { ascending: true });
   if (error || !data) return [];
+  const env = envBaseModel();
   return data.map((r) => ({
     id: r.id as number,
     label: (r.label as string) ?? null,
     active: r.active as boolean,
     masked: mask(r.api_key as string),
+    model: (r.model as string) || env.model,
   }));
 }
 
-export async function addKey(apiKey: string, label?: string): Promise<number | null> {
+export async function addKey(
+  apiKey: string,
+  opts: { label?: string; baseUrl?: string; model?: string } = {},
+): Promise<number | null> {
   const sb = createSupabaseAdminClient();
   const { data } = await sb
     .from("ai_keys")
-    .insert({ api_key: apiKey.trim(), label: label || null })
+    .insert({
+      api_key: apiKey.trim(),
+      label: opts.label || null,
+      base_url: opts.baseUrl || null,
+      model: opts.model || null,
+    })
     .select("id")
     .single();
   return (data?.id as number) ?? null;

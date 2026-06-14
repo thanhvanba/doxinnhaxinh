@@ -13,7 +13,7 @@ import {
   saveMemory,
   deleteMemory,
 } from "@/lib/agent";
-import { listKeys, addKey, deleteKey } from "@/lib/ai";
+import { listKeys, addKey, deleteKey, PROVIDER_PRESETS } from "@/lib/ai";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatPriceVND } from "@/lib/format";
 import {
@@ -319,19 +319,44 @@ async function showMemories(chatId: number | string) {
   );
 }
 
-/** Quản lý pool API key: /key [list] · /key add <KEY> [ghi chú] · /key del <id> */
+/** Quản lý pool API key: /key [list] · /key add <KEY> [provider] [model] · /key del <id> */
 async function handleKeyCommand(chatId: number | string, raw: string) {
   const parts = raw.trim().split(/\s+/);
   const sub = (parts[1] || "list").toLowerCase();
+  const provNames = Object.keys(PROVIDER_PRESETS).join(" / ");
 
   if (sub === "add") {
     const k = parts[2];
     if (!k) {
-      await sendMessage(chatId, "Cú pháp: <code>/key add &lt;API_KEY&gt; [ghi chú]</code>");
+      await sendMessage(
+        chatId,
+        `Cú pháp: <code>/key add &lt;KEY&gt; [provider] [model]</code>\n` +
+          `provider: ${provNames} — hoặc dán full base_url. Bỏ trống = Gemini.\n` +
+          `Vd: <code>/key add sk-xxx deepseek</code> · <code>/key add sk-xxx anthropic claude-sonnet-4-6</code>`,
+      );
       return;
     }
-    await addKey(k, parts.slice(3).join(" ") || undefined);
-    await sendMessage(chatId, `✅ Đã thêm key (…${k.slice(-4)}). Pool tự dùng ngay, khỏi deploy.`);
+    const prov = parts[3];
+    let baseUrl: string | undefined;
+    let model: string | undefined;
+    let label: string | undefined;
+    if (prov) {
+      const preset = PROVIDER_PRESETS[prov.toLowerCase()];
+      if (preset) {
+        baseUrl = preset.base;
+        model = parts[4] || preset.model;
+        label = prov.toLowerCase();
+      } else if (/^https?:\/\//.test(prov)) {
+        baseUrl = prov;
+        model = parts[4];
+      }
+    }
+    const id = await addKey(k, { baseUrl, model, label });
+    await sendMessage(
+      chatId,
+      `✅ Đã thêm key (…${k.slice(-4)})${label ? ` · ${label}` : ""}${model ? ` · ${model}` : ""}. Pool tự dùng ngay.`,
+      id ? [[{ text: "🗑️ Hủy", callback_data: `delkey:${id}` }]] : undefined,
+    );
     return;
   }
   if (sub === "del" || sub === "xoa") {
@@ -351,12 +376,15 @@ async function handleKeyCommand(chatId: number | string, raw: string) {
     return;
   }
   const lines = keys
-    .map((k) => `#${k.id} ${k.masked}${k.label ? ` (${k.label})` : ""}${k.active ? "" : " ⛔"}`)
+    .map(
+      (k) =>
+        `#${k.id} ${k.masked} · ${k.model}${k.label ? ` (${k.label})` : ""}${k.active ? "" : " ⛔"}`,
+    )
     .join("\n");
   await sendMessage(
     chatId,
-    `🔑 <b>${keys.length} API key</b> (pool tự xoay vòng):\n${lines}\n\n` +
-      `Thêm: <code>/key add &lt;KEY&gt; [ghi chú]</code> · Xóa: <code>/key del &lt;id&gt;</code>`,
+    `🔑 <b>${keys.length} API key</b> (pool xoay vòng, 429 → nhảy key kế):\n${lines}\n\n` +
+      `Thêm: <code>/key add &lt;KEY&gt; [provider] [model]</code> · Xóa: <code>/key del &lt;id&gt;</code>`,
   );
 }
 
