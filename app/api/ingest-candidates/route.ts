@@ -25,19 +25,14 @@ function authed(req: NextRequest): boolean {
   return key === secret;
 }
 
-function slugify(s: string): string {
-  return s
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "D")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
-type Candidate = { url: string; name?: string };
+type Candidate = {
+  url: string;
+  name?: string;
+  image?: string; // 1 thumbnail (quét trang danh sách 🔥)
+  images?: string[]; // full gallery (quét trang sản phẩm PDP 🖼️)
+  video?: string;
+  full?: boolean; // true = quét PDP → đè full gallery + video kể cả SP đã có ảnh
+};
 
 export async function POST(req: NextRequest) {
   if (!authed(req)) return NextResponse.json({ ok: false }, { status: 401 });
@@ -48,14 +43,17 @@ export async function POST(req: NextRequest) {
   }
   const sb = createSupabaseAdminClient();
 
-  // Lấy trước các item_id đã có để chống trùng.
+  // SP đã có (theo item_id) + tình trạng ảnh → để chống trùng + backfill ảnh.
   const { data: existing } = await sb
     .from("products")
-    .select("shopee_item_id")
+    .select("id,shopee_item_id,image_url")
     .not("shopee_item_id", "is", null);
-  const have = new Set((existing || []).map((r) => r.shopee_item_id));
+  const existMap = new Map(
+    (existing || []).map((r) => [r.shopee_item_id, { id: r.id, hasImage: !!r.image_url }]),
+  );
 
   let added = 0;
+  let updated = 0;
   let skipped = 0;
   const errors: string[] = [];
   const seen = new Set<string>();
@@ -66,11 +64,43 @@ export async function POST(req: NextRequest) {
       skipped++;
       continue;
     }
-    if (have.has(ids.itemId) || seen.has(ids.itemId)) {
+    if (seen.has(ids.itemId)) {
       skipped++;
       continue;
     }
     seen.add(ids.itemId);
+
+    const gallery = (Array.isArray(it.images) && it.images.length ? it.images : [])
+      .map((s) => (s || "").trim())
+      .filter(Boolean);
+    const img0 = (it.image || "").trim();
+    const imgs = gallery.length ? gallery : img0 ? [img0] : [];
+    const vid0 = (it.video || "").trim();
+
+    // Đã có sẵn:
+    //  - quét PDP (full): đè full gallery + video, kể cả khi đã có ảnh.
+    //  - quét danh sách: chỉ bù thumbnail khi đang thiếu ảnh.
+    const ex = existMap.get(ids.itemId);
+    if (ex) {
+      const doFull = it.full && (imgs.length > 0 || vid0);
+      const doBackfill = !ex.hasImage && imgs.length > 0;
+      const patch: Record<string, unknown> = {};
+      if (doFull || doBackfill) {
+        if (imgs.length) {
+          patch.image_url = imgs[0];
+          patch.images = imgs;
+        }
+        if (vid0) patch.video_url = vid0;
+      }
+      if (Object.keys(patch).length) {
+        const { error } = await sb.from("products").update(patch).eq("id", ex.id);
+        if (error) errors.push(`${ids.itemId}: ${error.message}`);
+        else updated++;
+      } else {
+        skipped++;
+      }
+      continue;
+    }
 
     // Tên: ưu tiên tên DOM gửi lên; nếu trống thì tách từ slug trong URL.
     let name = (it.name || "").trim();
@@ -102,6 +132,9 @@ export async function POST(req: NextRequest) {
       affiliate_url: affiliate,
       shopee_item_id: ids.itemId,
       shopee_shop_id: ids.shopId,
+      image_url: imgs[0] || null,
+      images: imgs,
+      video_url: vid0 || null,
       source: "trending",
       status: "draft",
     });
@@ -111,23 +144,23 @@ export async function POST(req: NextRequest) {
       else errors.push(`${slug}: ${error.message}`);
     } else {
       added++;
-      have.add(ids.itemId);
+      existMap.set(ids.itemId, { id: 0, hasImage: imgs.length > 0 });
     }
   }
 
   // Tự báo về bot khi có hàng mới (khép vòng — anh khỏi tự kiểm).
   const chat = process.env.TELEGRAM_ADMIN_CHAT_ID;
-  if (added > 0 && chat) {
+  if ((added > 0 || updated > 0) && chat) {
     try {
       await sendMessage(
         chat,
-        `🔥 Đã nhận <b>${added}</b> hàng mới về kho (bỏ qua ${skipped} trùng).\n` +
-          `Gõ /duyet để xem + tạo bài. Nhớ bấm 🐱 lấy ảnh+video cho hàng mới.`,
+        `🔥 Hàng mới: <b>${added}</b> · bổ sung ảnh: <b>${updated}</b> (bỏ qua ${skipped} trùng).\n` +
+          `Gõ /duyet để xem + tạo bài.`,
       );
     } catch {
       /* không chặn response nếu báo bot lỗi */
     }
   }
 
-  return NextResponse.json({ ok: true, added, skipped, errors });
+  return NextResponse.json({ ok: true, added, updated, skipped, errors });
 }
